@@ -1,36 +1,103 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Visual Working Memory Training
 
-## Getting Started
+An adaptive **change‑detection** training task that uses **only blurred bar stimuli** (matching the blurred‑group condition) to train visual working memory (VWM). Implements the key timings and staircase from Wang & Qian (2020).
 
-First, run the development server:
+> **Task gist:** Brief memory array → delay → test array with a cued item; decide **Same** vs **Different** (±20° orientation change). Every 20 trials, if accuracy ≥ 90% set size increases by +2 (max 10), otherwise decreases by −1 (min 1).
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+---
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Features
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+* **HUD**: score, rank, set size, trial number
+* **Progress bar** for the current 20‑trial block
+* **Help overlay** (`H`) and **Pause** (`P`)
+* **WebAudio** beeps + rank‑up chord (web)
+* **Adaptive staircase** (1–10 items, +2/−1 rule)
+* **Scoring**: +10 correct, +5 bonus if RT ≤ 600 ms; ranks: Beginner → Expert
+* **Only blurred bars** for training difficulty
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+---
 
-## Learn More
+## Controls
 
-To learn more about Next.js, take a look at the following resources:
+* `LEFT` → **Same**
+* `RIGHT` → **Different**
+* `H` → Toggle help overlay
+* `P` → Pause / resume
+* `ESC` (Python version) → Quit
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+---
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Timings and Parameters
 
-## Deploy on Vercel
+* Fixation: **500 ms**
+* Pre‑blank: **500 ms**
+* Memory array: **500 ms**
+* ISI: **800 ms**
+* Response window: **2500 ms**
+* Orientation change: **±20°** (change trials only)
+* Set size: **1–10**, adapted every **20 trials** using ≥90% rule
+* Stimuli: **black oriented bars**, blurred via **Gaussian blur** (web: CSS blur; Python: PIL GaussianBlur)
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+> These values reflect most of the change‑detection protocol reported by Wang & Qian (2020), applied here with blurred stimuli only.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+---
+
+## Web (Next.js) — Quick Start
+
+1. Create a Next.js app with Tailwind (recommended):
+
+   ```bash
+   npx create-next-app@latest vwm-training --ts --tailwind --eslint
+   cd visual-working-memory-trainer
+   ```
+2. Dev run:
+
+   ```bash
+   npm run dev
+   ```
+3. Visit `http://localhost:3000` and use the key bindings above.
+
+### Notes on Dependencies
+
+* Next.js, React, Tailwind are **MIT‑licensed**. If you redistribute a packaged build or the repository, include their license notices (see **Licensing** below).
+
+---
+
+## Roadmap / Nice‑to‑haves
+
+* Export per‑trial CSV (set size, change/same, correct, RT)
+* Session summary (accuracy by set size, quick plots)
+* Pashler’s K estimator readout
+* Theme toggle (dark vs lab)
+* Touch UI (Same/Different buttons) for tablets
+
+---
+
+## Citation / Attribution
+
+* Wang, K., & Qian, J. (2020). **Training with high perceptual difficulty improves the capacity and fidelity of internal representation in VWM.** *Psychological Research, 85*(6), 2408–2419. [https://doi.org/10.1007/s00426-020-01404-2](https://doi.org/10.1007/s00426-020-01404-2)
+This project **does not** include or reproduce any figures or text from that paper.
+
+---
+
+## Licensing (read this)
+* **Source‑available** (**BSL 1.1**) 
+
+If you bundle/distribute the web app, include third‑party notices for **Next.js/React/Tailwind** (MIT). If you only deploy to Vercel, you’re hosting a service (no distribution obligations), but a PUBLIC repo should still include proper license files.
+
+> **Not legal advice.** For commercial deployments, talk to counsel if you need strong restrictions.
+
+---
+
+## Acknowledgements
+
+* Built with Next.js + Tailwind.
+* Sounds via WebAudio API; no external assets required.
+
+---
+
+## Disclaimer
+
+This is a **research training tool**, not a medical product. No claims about clinical efficacy.
+
