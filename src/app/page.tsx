@@ -238,7 +238,7 @@ export default function Page() {
         'MEMORY: A brief array of blurred bars appears.',
         'TEST: One item is cued; its orientation may differ by 20°.',
         'TASK: Decide if the test array is the SAME or DIFFERENT.',
-        'Keys — LEFT: Same, RIGHT: Different, H: Help, P: Pause',
+        'Keys — LEFT: Same, RIGHT: Different, H: Help, P: Pause, R: Reset Stats',
         'Scoring — +10 correct, +5 bonus if ≤ 600 ms.',
         'Progression — every 20 trials: ≥ 90% → set size +2 (max 7), else −1 (min 1).',
         'All stimuli are blurred (BG condition).',
@@ -345,7 +345,7 @@ export default function Page() {
       setTimeout(() => {
         if ((barTotal + 1) % BLOCK_SIZE === 0) {
           const acc = (barCorrect + (correct ? 1 : 0)) / BLOCK_SIZE
-          const next = acc >= 0.9 ? Math.min(SET_MAX, setSize + 2) : Math.max(SET_MIN, setSize - 1)
+          const next = acc >= 0.9 ? Math.min(SET_MAX, setSize + 1) : Math.max(SET_MIN, setSize - 1)
           setSetSize(next)
           setBarCorrect(0); setBarTotal(0)
           setToast(`Block complete — accuracy ${(acc * 100).toFixed(1)}%  ·  New set size → ${next}`)
@@ -376,7 +376,7 @@ export default function Page() {
         <div className="p-4">
           <canvas ref={canvasRef} width={1024} height={700} className="w-full rounded-xl border border-neutral-200 bg-neutral-200" />
           <div className="mt-3 flex items-center justify-between text-xs text-neutral-600 font-mono">
-            <div>LEFT = Different · RIGHT = Same · H = Help · P = Pause</div>
+            <div>LEFT = Different · RIGHT = Same · H = Help · P = Pause · Reset Stats </div>
             <div>Fix {FIX_MS} · Pre {PRE_BLANK_MS} · Mem {MEM_MS} · ISI {ISI_MS} · Resp {RESP_WINDOW_MS}</div>
           </div>
         </div>
