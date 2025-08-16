@@ -345,7 +345,7 @@ export default function Page() {
       setTimeout(() => {
         if ((barTotal + 1) % BLOCK_SIZE === 0) {
           const acc = (barCorrect + (correct ? 1 : 0)) / BLOCK_SIZE
-          const next = acc >= 0.9 ? Math.min(SET_MAX, setSize + 1) : Math.max(SET_MIN, setSize - 1)
+          const next = acc >= 0.9 ? Math.min(SET_MAX, setSize + 1) : acc >= 0.6 ? setSize :  Math.max(SET_MIN, setSize - 1)
           setSetSize(next)
           setBarCorrect(0); setBarTotal(0)
           setToast(`Block complete — accuracy ${(acc * 100).toFixed(1)}%  ·  New set size → ${next}`)
