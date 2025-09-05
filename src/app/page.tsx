@@ -18,7 +18,7 @@ const BLUR_PX = 2.5;
 const ANGLE_CHANGE = 20; // deg
 
 const BLOCK_SIZE = 20;
-const SET_MIN = 1; // MIN num of bars per set
+const SET_MIN = 2; // MIN num of bars per set
 const SET_MAX = 10; // MAX num of bars per set
 
 const RANKS: Array<[string, number]> = [
