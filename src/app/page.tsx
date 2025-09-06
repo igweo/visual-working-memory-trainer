@@ -287,11 +287,72 @@ export default function Page() {
   const probeIdxRef = useRef(0);
   const changeRef = useRef(false);
   const testStartRef = useRef(0);
+  const respTimeoutRef = useRef<number | null>(null);
+  const correctStreakRef = useRef(0);
+  const respElapsedRef = useRef(0);
 
   const toneRef = useRef<Tone | null>(null);
   useEffect(() => {
     toneRef.current = new Tone();
   }, []);
+
+  // Centralized trial finishing logic
+  const finishTrial = (correct: boolean, rt: number) => {
+    if (correct) {
+      const add = POINTS_CORRECT + (rt <= FAST_BONUS_MS ? FAST_BONUS : 0);
+      const newPts = points + add;
+      const oldRank = rankFor(points);
+      const newRank = rankFor(newPts);
+      setPoints(newPts);
+      toneRef.current?.beep(880, 120, 0.18);
+      if (newRank !== oldRank) {
+        setToast(`Rank up → ${newRank}`);
+        toneRef.current?.chord([1046, 1318, 1568], 220, 0.16);
+        setTimeout(() => setToast(null), 1200);
+      }
+      setBarCorrect((c) => c + 1);
+    } else {
+      toneRef.current?.beep(220, 160, 0.2);
+    }
+
+    // 3-up/1-down adaptive rule
+    if (correct) {
+      correctStreakRef.current += 1;
+      if (correctStreakRef.current >= 3) {
+        setSetSize((s) => Math.min(SET_MAX, s + 1));
+        correctStreakRef.current = 0;
+      }
+    } else {
+      setSetSize((s) => Math.max(SET_MIN, s - 1));
+      correctStreakRef.current = 0;
+    }
+
+    setBarTotal((t) => t + 1);
+    setTrial((t) => t + 1);
+
+    // Block accounting and continuation
+    setTimeout(() => {
+      if ((barTotal + 1) % BLOCK_SIZE === 0) {
+        const acc = (barCorrect + (correct ? 1 : 0)) / BLOCK_SIZE;
+        setToast(`Block complete — accuracy ${(acc * 100).toFixed(1)}%`);
+        setBarCorrect(0);
+        setBarTotal(0);
+        setTimeout(() => setToast(null), 1500);
+      }
+      startTrial();
+    }, 40);
+  };
+
+  const handleResponse = (respChange: boolean) => {
+    if (help || paused || phase !== "test") return;
+    if (respTimeoutRef.current != null) {
+      clearTimeout(respTimeoutRef.current);
+      respTimeoutRef.current = null;
+    }
+    const rt = performance.now() - testStartRef.current;
+    const correct = respChange === changeRef.current;
+    finishTrial(correct, rt);
+  };
 
   // Draw frame by phase
   useEffect(() => {
@@ -389,7 +450,7 @@ export default function Page() {
               "TASK: Decide if the test array is the SAME or DIFFERENT.",
               "Keys — LEFT: Same, RIGHT: Different, H: Help, P: Pause, R: Reset Stats",
               "Scoring — +10 correct, +5 bonus if ≤ 600 ms.",
-              "Progression — every 20 trials: ≥ 90% → set size +2 (max 7), else −1 (min 1).",
+              "Adaptive — 3-up/1-down: +1 after 3 correct, −1 after 1 incorrect (2–10).",
               "All stimuli are blurred (BG condition).",
               "Press any key to begin / close help.",
             ]
@@ -399,7 +460,7 @@ export default function Page() {
               "TASK: Decide if the test array is the SAME or DIFFERENT.",
               "Keys — LEFT: Same, RIGHT: Different, H: Help, P: Pause, R: Reset Stats",
               "Scoring — +10 correct, +5 bonus if ≤ 600 ms.",
-              "Progression — every 20 trials: ≥ 90% → set size +2 (max 7), else −1 (min 1).",
+              "Adaptive — 3-up/1-down: +1 after 3 correct, −1 after 1 incorrect (2–10).",
               "All stimuli are blurred (BG condition).",
               "Press any key to begin / close help.",
             ];
@@ -451,6 +512,10 @@ export default function Page() {
   const startTrial = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    if (respTimeoutRef.current != null) {
+      clearTimeout(respTimeoutRef.current);
+      respTimeoutRef.current = null;
+    }
     const cx = Math.floor(w / 2),
       cy = Math.floor(h / 2) + 20;
     const radius = Math.min(w, h) / 3;
@@ -493,6 +558,11 @@ export default function Page() {
           setTimeout(() => {
             testStartRef.current = performance.now();
             setPhase("test");
+            respElapsedRef.current = 0;
+            respTimeoutRef.current = window.setTimeout(() => {
+              // timeout -> incorrect
+              finishTrial(false, RESP_WINDOW_MS);
+            }, RESP_WINDOW_MS);
           }, ISI_MS);
         }, MEM_MS);
       }, PRE_BLANK_MS);
@@ -521,62 +591,31 @@ export default function Page() {
         return;
       }
       if (e.key === "p" || e.key === "P") {
-        setPaused((v) => !v);
+        if (!paused) {
+          if (phase === "test") {
+            respElapsedRef.current = performance.now() - testStartRef.current;
+            if (respTimeoutRef.current != null) {
+              clearTimeout(respTimeoutRef.current);
+              respTimeoutRef.current = null;
+            }
+          }
+          setPaused(true);
+        } else {
+          if (phase === "test") {
+            const remaining = Math.max(0, RESP_WINDOW_MS - respElapsedRef.current);
+            testStartRef.current = performance.now() - respElapsedRef.current;
+            respTimeoutRef.current = window.setTimeout(() => {
+              finishTrial(false, RESP_WINDOW_MS);
+            }, remaining);
+          }
+          setPaused(false);
+        }
         return;
       }
       if (paused) return;
       if (phase !== "test") return;
       if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-
-      const rt = performance.now() - testStartRef.current;
-      const respChange = e.key === "ArrowRight";
-      const correct = respChange === changeRef.current;
-
-      if (correct) {
-        let add = POINTS_CORRECT + (rt <= FAST_BONUS_MS ? FAST_BONUS : 0);
-        const newPts = points + add;
-        const oldRank = rankFor(points);
-        const newRank = rankFor(newPts);
-        setPoints(newPts);
-        toneRef.current?.beep(880, 120, 0.18);
-        if (newRank !== oldRank) {
-          setToast(`Rank up → ${newRank}`);
-          toneRef.current?.chord([1046, 1318, 1568], 220, 0.16);
-          setTimeout(() => setToast(null), 1200);
-        }
-        setBarCorrect((c) => c + 1);
-      } else {
-        toneRef.current?.beep(220, 160, 0.2);
-      }
-      setBarTotal((t) => t + 1);
-      setTrial((t) => t + 1);
-
-      // Staircase every 20
-      setTimeout(() => {
-        if ((barTotal + 1) % BLOCK_SIZE === 0) {
-          const acc = (barCorrect + (correct ? 1 : 0)) / BLOCK_SIZE;
-          const next =
-            acc >= 0.9
-              ? Math.min(SET_MAX, setSize + 1)
-              : acc >= 0.6
-                ? setSize
-                : Math.max(SET_MIN, setSize - 1);
-          setSetSize(next);
-          setBarCorrect(0);
-          setBarTotal(0);
-          setToast(
-            `Block complete — accuracy ${(acc * 100).toFixed(1)}%  ·  New set size → ${next}`,
-          );
-          setTimeout(() => setToast(null), 1500);
-        }
-        // On each question, answer save data
-        localStorage.setItem("set_size", JSON.stringify(setSize));
-        localStorage.setItem("points", JSON.stringify(points));
-        localStorage.setItem("set_trial", JSON.stringify(trial)); // fixed key
-        localStorage.setItem("bar_total", JSON.stringify(barTotal));
-        localStorage.setItem("bar_correct", JSON.stringify(barCorrect));
-        startTrial();
-      }, 40);
+      handleResponse(e.key === "ArrowRight");
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -591,6 +630,22 @@ export default function Page() {
   useEffect(() => {
     localStorage.setItem("mode", mode);
   }, [mode]);
+
+  // Persist session state reliably
+  useEffect(() => {
+    localStorage.setItem("set_size", JSON.stringify(setSize));
+    localStorage.setItem("points", JSON.stringify(points));
+    localStorage.setItem("set_trial", JSON.stringify(trial));
+    localStorage.setItem("bar_total", JSON.stringify(barTotal));
+    localStorage.setItem("bar_correct", JSON.stringify(barCorrect));
+  }, [setSize, points, trial, barTotal, barCorrect]);
+
+  // Cleanup timers on unmount
+  useEffect(() => {
+    return () => {
+      if (respTimeoutRef.current != null) clearTimeout(respTimeoutRef.current);
+    };
+  }, []);
 
   return (
     <div className="min-h-screen bg-neutral-100 text-neutral-900 flex items-center justify-center p-6">
@@ -622,9 +677,25 @@ export default function Page() {
               LEFT = Same · RIGHT = Different · H = Help · P = Pause · R = Reset
               Stats
             </div>
-            <div>
-              Fix {FIX_MS} · Pre {PRE_BLANK_MS} · Mem {MEM_MS} · ISI {ISI_MS} ·
-              Resp {RESP_WINDOW_MS}
+            <div className="flex items-center gap-2">
+              <div>
+                Fix {FIX_MS} · Pre {PRE_BLANK_MS} · Mem {MEM_MS} · ISI {ISI_MS} ·
+                Resp {RESP_WINDOW_MS}
+              </div>
+              <button
+                onClick={() => handleResponse(false)}
+                disabled={help || paused || phase !== "test"}
+                className="px-3 py-1 rounded-md border border-neutral-300 text-xs hover:bg-neutral-50 disabled:opacity-50"
+              >
+                Same
+              </button>
+              <button
+                onClick={() => handleResponse(true)}
+                disabled={help || paused || phase !== "test"}
+                className="px-3 py-1 rounded-md border border-neutral-300 text-xs hover:bg-neutral-50 disabled:opacity-50"
+              >
+                Different
+              </button>
             </div>
           </div>
         </div>
