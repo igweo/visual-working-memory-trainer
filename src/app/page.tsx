@@ -21,6 +21,17 @@ const BLOCK_SIZE = 20;
 const SET_MIN = 2; // MIN num of bars per set
 const SET_MAX = 10; // MAX num of bars per set
 
+// -------------------- Spatial-frequency (Gabor) config --------------------
+// Spatial frequency is parameterized in cycles per stimulus diameter (px).
+// This approximates cpd without requiring precise viewing geometry.
+const GABOR_DIAM_PX = 120; // match bar length footprint
+const GABOR_SIGMA_FRAC = 0.45; // Gaussian envelope sigma as fraction of radius
+const GABOR_CONTRAST = 0.55; // 0..1
+const FREQ_MIN = 1.0; // cycles per stimulus
+const FREQ_MAX = 6.0; // cycles per stimulus
+const FREQ_STEP_FRAC = 0.25; // ±25% change for DIFFERENT trials
+const FREQ_MIN_SEP_FRAC = 0.12; // ensure items are distinct by ≥12%
+
 const RANKS: Array<[string, number]> = [
   ["Beginner", 0],
   ["Novice", 200],
@@ -155,7 +166,108 @@ function randomHues(n: number) {
   return arr;
 }
 
+// (added) Distinct spatial frequencies for spatial mode
+function randomFreqs(n: number) {
+  const arr: number[] = [];
+  for (let i = 0; i < n; i++) {
+    let tries = 0;
+    while (tries++ < 999) {
+      const f = FREQ_MIN + Math.random() * (FREQ_MAX - FREQ_MIN);
+      const ok = arr.every((o) => {
+        const rel = Math.abs(f - o) / ((f + o) / 2);
+        return rel >= FREQ_MIN_SEP_FRAC;
+      });
+      if (ok) {
+        arr.push(f);
+        break;
+      }
+    }
+    if (arr.length < i + 1) arr.push(FREQ_MIN + (i * (FREQ_MAX - FREQ_MIN)) / Math.max(1, n - 1));
+  }
+  return arr;
+}
+
 // -------------------- Drawing --------------------
+// Utility to create an offscreen Gabor canvas for a given spatial frequency
+function createGaborCanvas(freqCyclesPerStim: number, blurOn: boolean) {
+  const size = GABOR_DIAM_PX;
+  const off = document.createElement("canvas");
+  off.width = size;
+  off.height = size;
+  const ctx = off.getContext("2d")!;
+
+  // Draw sinusoidal grating (vertical) in grayscale
+  const img = ctx.createImageData(size, size);
+  const twoPi = Math.PI * 2;
+  const contrast = GABOR_CONTRAST;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const idx = (y * size + x) * 4;
+      const phase = twoPi * freqCyclesPerStim * (x / size);
+      const s = 0.5 + 0.5 * contrast * Math.sin(phase);
+      const val = Math.max(0, Math.min(255, Math.round(s * 255)));
+      img.data[idx] = val;
+      img.data[idx + 1] = val;
+      img.data[idx + 2] = val;
+      img.data[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  // Apply circular Gaussian-like envelope using radial gradient mask
+  const mask = document.createElement("canvas");
+  mask.width = size;
+  mask.height = size;
+  const mctx = mask.getContext("2d")!;
+  const cx = size / 2;
+  const cy = size / 2;
+  const r = size / 2;
+  const sigma = r * GABOR_SIGMA_FRAC;
+  const grd = mctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+  // Approximate Gaussian with multiple stops
+  grd.addColorStop(0, "rgba(255,255,255,1)");
+  grd.addColorStop(Math.min(1, sigma / r), "rgba(255,255,255,1)");
+  grd.addColorStop(Math.min(1, (sigma / r) * 1.6), "rgba(255,255,255,0.6)");
+  grd.addColorStop(1, "rgba(255,255,255,0)");
+  mctx.fillStyle = grd;
+  mctx.beginPath();
+  mctx.arc(cx, cy, r, 0, Math.PI * 2);
+  mctx.fill();
+
+  // Composite mask
+  ctx.globalCompositeOperation = "destination-in";
+  ctx.drawImage(mask, 0, 0);
+  ctx.globalCompositeOperation = "source-over";
+
+  if (blurOn) {
+    // Apply stimulus blur to match BG condition
+    const tmp = document.createElement("canvas");
+    tmp.width = size;
+    tmp.height = size;
+    const tctx = tmp.getContext("2d")!;
+    tctx.filter = `blur(${BLUR_PX}px)`;
+    tctx.drawImage(off, 0, 0);
+    return tmp;
+  }
+  return off;
+}
+
+function drawGaborArray(
+  ctx: CanvasRenderingContext2D,
+  positions: Array<[number, number]>,
+  freqs: number[],
+  blurOn: boolean,
+) {
+  const size = GABOR_DIAM_PX;
+  for (let i = 0; i < positions.length; i++) {
+    const [x, y] = positions[i];
+    const can = createGaborCanvas(freqs[i], blurOn);
+    ctx.save();
+    ctx.translate(x - size / 2, y - size / 2);
+    ctx.drawImage(can, 0, 0);
+    ctx.restore();
+  }
+}
 function drawFixation(ctx: CanvasRenderingContext2D, cx: number, cy: number) {
   ctx.save();
   ctx.strokeStyle = "#111";
@@ -176,11 +288,12 @@ function drawBar(
   x: number,
   y: number,
   angleDeg: number,
+  blurOn: boolean,
 ) {
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(deg2rad(angleDeg));
-  ctx.filter = `blur(${BLUR_PX}px)`; // This line determines the blur effect and is very important
+  ctx.filter = blurOn ? `blur(${BLUR_PX}px)` : "none"; // blur only for BG
   ctx.fillStyle = "#000";
   ctx.fillRect(-BAR_LEN / 2, -BAR_W / 2, BAR_LEN, BAR_W);
   ctx.restore();
@@ -193,11 +306,12 @@ function drawBarColor(
   y: number,
   angleDeg: number,
   hue: number,
+  blurOn: boolean,
 ) {
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(deg2rad(angleDeg));
-  ctx.filter = `blur(${BLUR_PX}px)`;
+  ctx.filter = blurOn ? `blur(${BLUR_PX}px)` : "none";
   ctx.fillStyle = `hsl(${hue}, 80%, 45%)`;
   ctx.fillRect(-BAR_LEN / 2, -BAR_W / 2, BAR_LEN, BAR_W);
   ctx.restore();
@@ -207,10 +321,11 @@ function drawArray(
   ctx: CanvasRenderingContext2D,
   positions: Array<[number, number]>,
   orientations: number[],
+  blurOn: boolean,
 ) {
   for (let i = 0; i < positions.length; i++) {
     const [x, y] = positions[i];
-    drawBar(ctx, x, y, orientations[i]);
+    drawBar(ctx, x, y, orientations[i], blurOn);
   }
 }
 
@@ -220,10 +335,11 @@ function drawArrayColored(
   positions: Array<[number, number]>,
   orientations: number[],
   hues: number[],
+  blurOn: boolean,
 ) {
   for (let i = 0; i < positions.length; i++) {
     const [x, y] = positions[i];
-    drawBarColor(ctx, x, y, orientations[i], hues[i] ?? 0);
+    drawBarColor(ctx, x, y, orientations[i], hues[i] ?? 0, blurOn);
   }
 }
 
@@ -257,7 +373,10 @@ export default function Page() {
   >("idle");
 
   // (added) training mode toggle
-  const [mode, setMode] = useState<"orientation" | "color">("orientation");
+  const [mode, setMode] = useState<"orientation" | "color" | "spatial">(
+    "orientation",
+  );
+  const [blurOn, setBlurOn] = useState(true); // BG (true) vs NBG (false)
 
   const rank = useMemo(() => rankFor(points), [points]);
   const [nextRankName, nextRankThresh] = useMemo(
@@ -275,7 +394,9 @@ export default function Page() {
     setBarTotal(getDataAsNum("bar_total"));
     setBarCorrect(getDataAsNum("bar_correct"));
     const m = localStorage.getItem("mode");
-    if (m === "color" || m === "orientation") setMode(m);
+    if (m === "color" || m === "orientation" || m === "spatial") setMode(m);
+    const b = localStorage.getItem("blur_on");
+    if (b === "0" || b === "1") setBlurOn(b === "1");
   }, []);
 
   // Trial content refs
@@ -283,6 +404,8 @@ export default function Page() {
   const testOrientsRef = useRef<number[]>([]);
   const memHuesRef = useRef<number[]>([]); // (added)
   const testHuesRef = useRef<number[]>([]); // (added)
+  const memFreqsRef = useRef<number[]>([]);
+  const testFreqsRef = useRef<number[]>([]);
   const posRef = useRef<Array<[number, number]>>([]);
   const probeIdxRef = useRef(0);
   const changeRef = useRef(false);
@@ -315,16 +438,23 @@ export default function Page() {
       toneRef.current?.beep(220, 160, 0.2);
     }
 
-    // 3-up/1-down adaptive rule
-    if (correct) {
-      correctStreakRef.current += 1;
-      if (correctStreakRef.current >= 3) {
-        setSetSize((s) => Math.min(SET_MAX, s + 1));
+    // Adaptive rules
+    if (mode === "spatial") {
+      // Block-based adjustment handled at block boundary below
+      if (!correct) correctStreakRef.current = 0;
+      if (correct) correctStreakRef.current += 1; // tracked but not used here
+    } else {
+      // 3-up/1-down adaptive rule for original modes
+      if (correct) {
+        correctStreakRef.current += 1;
+        if (correctStreakRef.current >= 3) {
+          setSetSize((s) => Math.min(SET_MAX, s + 1));
+          correctStreakRef.current = 0;
+        }
+      } else {
+        setSetSize((s) => Math.max(SET_MIN, s - 1));
         correctStreakRef.current = 0;
       }
-    } else {
-      setSetSize((s) => Math.max(SET_MIN, s - 1));
-      correctStreakRef.current = 0;
     }
 
     setBarTotal((t) => t + 1);
@@ -337,6 +467,15 @@ export default function Page() {
         setToast(`Block complete — accuracy ${(acc * 100).toFixed(1)}%`);
         setBarCorrect(0);
         setBarTotal(0);
+        if (mode === "spatial") {
+          // Block rule: if accuracy ≥ 90% → +2 (cap 7), else −1 (floor 1)
+          const SP_MIN = 1;
+          const SP_MAX = 7;
+          setSetSize((s) => {
+            if (acc >= 0.9) return Math.min(SP_MAX, s + 2);
+            return Math.max(SP_MIN, s - 1);
+          });
+        }
         setTimeout(() => setToast(null), 1500);
       }
       startTrial();
@@ -401,9 +540,12 @@ export default function Page() {
           posRef.current,
           memOrientsRef.current,
           memHuesRef.current,
+          blurOn,
         );
+      } else if (mode === "spatial") {
+        drawGaborArray(ctx, posRef.current, memFreqsRef.current, blurOn);
       } else {
-        drawArray(ctx, posRef.current, memOrientsRef.current);
+        drawArray(ctx, posRef.current, memOrientsRef.current, blurOn);
       }
     } else if (phase === "test") {
       const [px, py] = posRef.current[probeIdxRef.current];
@@ -414,9 +556,12 @@ export default function Page() {
           posRef.current,
           testOrientsRef.current,
           testHuesRef.current,
+          blurOn,
         );
+      } else if (mode === "spatial") {
+        drawGaborArray(ctx, posRef.current, testFreqsRef.current, blurOn);
       } else {
-        drawArray(ctx, posRef.current, testOrientsRef.current);
+        drawArray(ctx, posRef.current, testOrientsRef.current, blurOn);
       }
       ctx.fillStyle = "#111";
       ctx.fillText(
@@ -434,8 +579,10 @@ export default function Page() {
       ctx.font = "24px ui-sans-serif, system-ui, -apple-system, Segoe UI";
       const title =
         mode === "color"
-          ? "Change Detection (Blurred Bars · Color)"
-          : "Change Detection (Blurred Bars)";
+          ? "Change Detection (Color Bars)"
+          : mode === "spatial"
+          ? `Change Detection (Spatial Frequency · ${blurOn ? "Blurred" : "No Blur"})`
+          : `Change Detection (Orientation · ${blurOn ? "Blurred" : "No Blur"})`;
       ctx.fillText(
         title,
         Math.floor(w / 2 - ctx.measureText(title).width / 2),
@@ -445,23 +592,36 @@ export default function Page() {
       const lines =
         mode === "color"
           ? [
-              "MEMORY: A brief array of COLORED blurred bars appears.",
+              `MEMORY: A brief array of ${blurOn ? "blurred" : "clear"} COLORED bars appears.`,
               `TEST: One item is cued; its color may differ by ${HUE_CHANGE}° hue.`,
               "TASK: Decide if the test array is the SAME or DIFFERENT.",
               "Keys — LEFT: Same, RIGHT: Different, H: Help, P: Pause, R: Reset Stats",
               "Scoring — +10 correct, +5 bonus if ≤ 600 ms.",
               "Adaptive — 3-up/1-down: +1 after 3 correct, −1 after 1 incorrect (2–10).",
-              "All stimuli are blurred (BG condition).",
+              `${blurOn ? "Blurred (BG)" : "No blur (NBG)"} condition.`,
+              "Press any key to begin / close help.",
+            ]
+          : mode === "spatial"
+          ? [
+              `MEMORY: A brief array of ${blurOn ? "blurred" : "clear"} circular GABOR patches appears.`,
+              `TEST: One item is cued; its spatial frequency may differ by ±${Math.round(
+                FREQ_STEP_FRAC * 100,
+              )}% of the original.`,
+              "TASK: Decide if the test array is the SAME or DIFFERENT.",
+              "Keys — LEFT: Same, RIGHT: Different, H: Help, P: Pause, R: Reset Stats",
+              "Scoring — +10 correct, +5 bonus if ≤ 600 ms.",
+              "Adaptive — Block rule: after 20 trials, ≥90% → +2, else −1 (1–7).",
+              `${blurOn ? "Blurred (BG)" : "No blur (NBG)"} condition.`,
               "Press any key to begin / close help.",
             ]
           : [
-              "MEMORY: A brief array of blurred bars appears.",
+              `MEMORY: A brief array of ${blurOn ? "blurred" : "clear"} bars appears.`,
               "TEST: One item is cued; its orientation may differ by 20°.",
               "TASK: Decide if the test array is the SAME or DIFFERENT.",
               "Keys — LEFT: Same, RIGHT: Different, H: Help, P: Pause, R: Reset Stats",
               "Scoring — +10 correct, +5 bonus if ≤ 600 ms.",
               "Adaptive — 3-up/1-down: +1 after 3 correct, −1 after 1 incorrect (2–10).",
-              "All stimuli are blurred (BG condition).",
+              `${blurOn ? "Blurred (BG)" : "No blur (NBG)"} condition.`,
               "Press any key to begin / close help.",
             ];
       let y = 180;
@@ -525,6 +685,8 @@ export default function Page() {
     memOrientsRef.current = randomOrientations(setSize);
     memHuesRef.current =
       mode === "color" ? randomHues(setSize) : new Array(setSize).fill(0);
+    memFreqsRef.current =
+      mode === "spatial" ? randomFreqs(setSize) : new Array(setSize).fill(FREQ_MIN);
 
     // Decide change and probe
     changeRef.current = Math.random() < 0.5;
@@ -533,6 +695,7 @@ export default function Page() {
     // Build test arrays
     testOrientsRef.current = [...memOrientsRef.current];
     testHuesRef.current = [...memHuesRef.current];
+    testFreqsRef.current = [...memFreqsRef.current];
 
     if (changeRef.current) {
       if (mode === "color") {
@@ -540,6 +703,12 @@ export default function Page() {
         testHuesRef.current[probeIdxRef.current] =
           (testHuesRef.current[probeIdxRef.current] + sign * HUE_CHANGE + 360) %
           360;
+      } else if (mode === "spatial") {
+        const base = testFreqsRef.current[probeIdxRef.current];
+        const sign = Math.random() < 0.5 ? 1 : -1;
+        let f = base * (1 + sign * FREQ_STEP_FRAC);
+        f = Math.max(FREQ_MIN, Math.min(FREQ_MAX, f));
+        testFreqsRef.current[probeIdxRef.current] = f;
       } else {
         const delta = Math.random() < 0.5 ? ANGLE_CHANGE : -ANGLE_CHANGE;
         testOrientsRef.current[probeIdxRef.current] =
@@ -629,7 +798,12 @@ export default function Page() {
   // persist mode choice (added)
   useEffect(() => {
     localStorage.setItem("mode", mode);
+    localStorage.setItem("blur_on", blurOn ? "1" : "0");
   }, [mode]);
+
+  useEffect(() => {
+    localStorage.setItem("blur_on", blurOn ? "1" : "0");
+  }, [blurOn]);
 
   // Persist session state reliably
   useEffect(() => {
@@ -655,15 +829,26 @@ export default function Page() {
             VWM Training · blurred bars
           </div>
           {/* added: simple toggle button */}
-          <button
-            onClick={() =>
-              setMode((m) => (m === "orientation" ? "color" : "orientation"))
-            }
-            className="px-3 py-1 rounded-md border border-neutral-300 text-xs font-mono hover:bg-neutral-50"
-            aria-label="Toggle training mode"
-          >
-            Mode: {mode === "orientation" ? "Orientation" : "Color"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() =>
+                setMode((m) =>
+                  m === "orientation" ? "color" : m === "color" ? "spatial" : "orientation",
+                )
+              }
+              className="px-3 py-1 rounded-md border border-neutral-300 text-xs font-mono hover:bg-neutral-50"
+              aria-label="Cycle training mode"
+            >
+              Mode: {mode === "orientation" ? "Orientation" : mode === "color" ? "Color" : "Spatial"}
+            </button>
+            <button
+              onClick={() => setBlurOn((b) => !b)}
+              className="px-3 py-1 rounded-md border border-neutral-300 text-xs font-mono hover:bg-neutral-50"
+              aria-label="Toggle blur condition"
+            >
+              {blurOn ? "BG: Blurred" : "NBG: No Blur"}
+            </button>
+          </div>
         </div>
         <div className="p-4">
           <canvas
