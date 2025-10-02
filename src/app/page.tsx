@@ -12,6 +12,10 @@ const MEM_MS = 500; // Memory 500ms
 const ISI_MS = 800; // ISI 500ms
 const RESP_WINDOW_MS = 2500; // 2500ms
 
+// Guided saccade timing (splits ISI across cue+blank)
+const SAC_ON_MS = 350; // target visible window
+const SAC_BLANK_MS = 450; // blank after target
+
 const BAR_LEN = 120; // px
 const BAR_W = 9; // px
 const BLUR_PX = 2.5;
@@ -49,6 +53,26 @@ const FAST_BONUS = 5;
 // -------------------- Color-mode config (added) --------------------
 const HUE_CHANGE = 30; // deg hue shift for "different" trials in color mode
 const HUE_MIN_SEP = 30; // ensure items are distinct in the memory array
+
+// -------------------- Numerosity config (added) --------------------
+const NUM_SET_MIN = 1; // legacy min for other uses
+const NUM_COUNT_MIN = 4; // enforced min for numerosity enumerate
+const NUM_SET_MAX = 12; // legacy cap
+const NUM_COUNT_MAX = 10; // enforced max for numerosity enumerate
+const NUM_MEM_MS = 200; // default exposure; will be stateful per user
+const NUM_MIN_SEP = 28; // default min separation; will be stateful
+const NUM_SIZE_MIN = 12; // px (radius for circle, half-size for square)
+const NUM_SIZE_MAX = 30; // px
+const NUM_HUE_JITTER = 24; // base hue jitter window
+type NumShapeKind = "circle" | "square" | "triangle" | "bar";
+type NumShape = {
+  x: number;
+  y: number;
+  size: number; // linear size (radius for circle)
+  rot: number; // deg
+  hue: number; // 0..360
+  kind: NumShapeKind;
+};
 
 // -------------------- Audio --------------------
 class Tone {
@@ -187,6 +211,59 @@ function randomFreqs(n: number) {
   return arr;
 }
 
+// -------------------- Numerosity stimulus generation (added) --------------------
+function randomInDisc(cx: number, cy: number, r: number): [number, number] {
+  const th = Math.random() * Math.PI * 2;
+  const rr = Math.sqrt(Math.random()) * r; // area-uniform
+  return [cx + Math.cos(th) * rr, cy + Math.sin(th) * rr];
+}
+function generateNumerosityShapes(
+  cx: number,
+  cy: number,
+  radius: number,
+  n: number,
+  minSepPx: number,
+  similarity01: number, // 0 easy (heterogeneous), 1 hard (homogeneous)
+): NumShape[] {
+  const shapes: NumShape[] = [];
+  const hueJitter = Math.max(0, NUM_HUE_JITTER * (1 - similarity01));
+  const baseKind: NumShapeKind = ((): NumShapeKind => {
+    const r = Math.random();
+    return r < 0.25 ? "circle" : r < 0.5 ? "square" : r < 0.75 ? "triangle" : "bar";
+  })();
+  // Poisson-like rejection sampling for spacing
+  let guard = 0;
+  while (shapes.length < n && guard++ < 5000) {
+    const [x, y] = randomInDisc(cx, cy, radius * 0.9);
+    const size = NUM_SIZE_MIN + Math.random() * (NUM_SIZE_MAX - NUM_SIZE_MIN);
+    const ok = shapes.every((s) => Math.hypot(s.x - x, s.y - y) >= minSepPx);
+    if (!ok) continue;
+    const rot = Math.floor(Math.random() * 180);
+    const baseHue = Math.floor(Math.random() * 360);
+    const hue = (baseHue + (Math.random() * 2 - 1) * hueJitter + 360) % 360;
+    const sameKindProb = similarity01 * 0.84; // push to homogeneity as similarity rises
+    const rnd = Math.random();
+    const kind: NumShapeKind = rnd < sameKindProb
+      ? baseKind
+      : (() => {
+          const r = Math.random();
+          return r < 0.25 ? "circle" : r < 0.5 ? "square" : r < 0.75 ? "triangle" : "bar";
+        })();
+    shapes.push({ x, y, size, rot, hue, kind });
+  }
+  // Fallback: if not enough (rare), pad with ring layout
+  for (let i = shapes.length; i < n; i++) {
+    const th = (2 * Math.PI * i) / n;
+    const rr = radius * 0.75;
+    const x = cx + Math.cos(th) * rr;
+    const y = cy + Math.sin(th) * rr;
+    const size = (NUM_SIZE_MIN + NUM_SIZE_MAX) / 2;
+    const hue = Math.floor(Math.random() * 360);
+    shapes.push({ x, y, size, rot: 0, hue, kind: baseKind });
+  }
+  return shapes;
+}
+
 // -------------------- Drawing --------------------
 // Utility to create an offscreen Gabor canvas for a given spatial frequency
 function createGaborCanvas(freqCyclesPerStim: number, blurOn: boolean) {
@@ -250,6 +327,45 @@ function createGaborCanvas(freqCyclesPerStim: number, blurOn: boolean) {
     return tmp;
   }
   return off;
+}
+
+// (added) Draw varied numerosity shapes
+function drawNumerosityShapes(
+  ctx: CanvasRenderingContext2D,
+  shapes: NumShape[],
+  blurOn: boolean,
+) {
+  for (const s of shapes) {
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.rotate(deg2rad(s.rot));
+    ctx.filter = blurOn ? `blur(${BLUR_PX}px)` : "none";
+    ctx.fillStyle = `hsl(${Math.round(s.hue)}, 70%, 45%)`;
+    ctx.strokeStyle = `hsl(${Math.round(s.hue)}, 70%, 30%)`;
+    ctx.lineWidth = 2;
+    if (s.kind === "circle") {
+      ctx.beginPath();
+      ctx.arc(0, 0, s.size, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (s.kind === "square") {
+      const a = s.size * 2;
+      ctx.fillRect(-a / 2, -a / 2, a, a);
+    } else if (s.kind === "triangle") {
+      const a = s.size * 2.2;
+      ctx.beginPath();
+      ctx.moveTo(0, -a / 2);
+      ctx.lineTo(a / 2, a / 2);
+      ctx.lineTo(-a / 2, a / 2);
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      // bar
+      const len = s.size * 3.0;
+      const w = Math.max(6, s.size * 0.5);
+      ctx.fillRect(-len / 2, -w / 2, len, w);
+    }
+    ctx.restore();
+  }
 }
 
 function drawGaborArray(
@@ -369,14 +485,28 @@ export default function Page() {
   const [barTotal, setBarTotal] = useState(0);
 
   const [phase, setPhase] = useState<
-    "idle" | "fix" | "preblank" | "mem" | "isi" | "test"
+    "idle" | "fix" | "preblank" | "mem" | "memA" | "isiA" | "memB" | "isiB" | "saccade" | "isi" | "test"
   >("idle");
 
   // (added) training mode toggle
-  const [mode, setMode] = useState<"orientation" | "color" | "spatial">(
+  const [mode, setMode] = useState<
+    "orientation" | "color" | "spatial" | "numerosity" | "saccade"
+  >(
     "orientation",
   );
+  const [numerositySubmode, setNumerositySubmode] = useState<"enumerate" | "compare">(
+    "enumerate",
+  );
   const [blurOn, setBlurOn] = useState(true); // BG (true) vs NBG (false)
+  const [sacTotal, setSacTotal] = useState(0);
+  const [sacHits, setSacHits] = useState(0);
+  // Numerosity adaptive knobs
+  const [numExposureMs, setNumExposureMs] = useState(NUM_MEM_MS);
+  const [numMinSepPx, setNumMinSepPx] = useState(NUM_MIN_SEP);
+  const [numSimilarity01, setNumSimilarity01] = useState(0.2); // 0 easy, 1 hard
+  const [numAnchorSetSize, setNumAnchorSetSize] = useState(5); // center of distribution (4–10 bracket)
+  const [numCompareDelta, setNumCompareDelta] = useState(2); // difference between A and B in compare mode
+  const recentOutcomesRef = useRef<Array<{ ok: boolean; rt: number }>>([]);
 
   const rank = useMemo(() => rankFor(points), [points]);
   const [nextRankName, nextRankThresh] = useMemo(
@@ -394,9 +524,35 @@ export default function Page() {
     setBarTotal(getDataAsNum("bar_total"));
     setBarCorrect(getDataAsNum("bar_correct"));
     const m = localStorage.getItem("mode");
-    if (m === "color" || m === "orientation" || m === "spatial") setMode(m);
+    if (
+      m === "color" ||
+      m === "orientation" ||
+      m === "spatial" ||
+      m === "numerosity" ||
+      m === "saccade"
+    )
+      setMode(m);
     const b = localStorage.getItem("blur_on");
     if (b === "0" || b === "1") setBlurOn(b === "1");
+    const sacT = getDataAsNum("sac_total");
+    const sacH = getDataAsNum("sac_hits");
+    setSacTotal(Number.isFinite(sacT) && sacT >= 0 ? sacT : 0);
+    setSacHits(Number.isFinite(sacH) && sacH >= 0 ? sacH : 0);
+    const nsm = localStorage.getItem("numerosity_submode");
+    if (nsm === "enumerate" || nsm === "compare") setNumerositySubmode(nsm as any);
+    const e = getDataAsNum("num_exposure_ms");
+    if (Number.isFinite(e) && e > 50) setNumExposureMs(e);
+    const sep = getDataAsNum("num_min_sep");
+    if (Number.isFinite(sep) && sep >= 16) setNumMinSepPx(sep);
+    const simRaw = localStorage.getItem("num_similarity01");
+    if (simRaw != null) {
+      const sim = parseFloat(simRaw);
+      if (Number.isFinite(sim) && sim >= 0 && sim <= 1) setNumSimilarity01(sim);
+    }
+    const anc = getDataAsNum("num_anchor_setsize");
+    if (Number.isFinite(anc) && anc >= NUM_SET_MIN && anc <= NUM_SET_MAX) setNumAnchorSetSize(anc);
+    const delta = getDataAsNum("num_compare_delta");
+    if (Number.isFinite(delta) && delta >= 1 && delta <= 3) setNumCompareDelta(delta);
   }, []);
 
   // Trial content refs
@@ -413,6 +569,15 @@ export default function Page() {
   const respTimeoutRef = useRef<number | null>(null);
   const correctStreakRef = useRef(0);
   const respElapsedRef = useRef(0);
+  const sacTargetRef = useRef<[number, number] | null>(null);
+  const sacHitRef = useRef(false);
+  const numShapesRef = useRef<NumShape[]>([]);
+  const numShapesBRef = useRef<NumShape[]>([]); // for compare
+  const numTargetCountRef = useRef(0);
+  // Compare-specific refs
+  const numCountARef = useRef(0);
+  const numCountBRef = useRef(0);
+  const numBLargerRef = useRef(false);
 
   const toneRef = useRef<Tone | null>(null);
   useEffect(() => {
@@ -443,6 +608,45 @@ export default function Page() {
       // Block-based adjustment handled at block boundary below
       if (!correct) correctStreakRef.current = 0;
       if (correct) correctStreakRef.current += 1; // tracked but not used here
+    } else if (mode === "numerosity") {
+      // Multi-parameter adaptation (hide count predictability)
+      const windowSize = 16;
+      recentOutcomesRef.current.push({ ok: correct, rt });
+      if (recentOutcomesRef.current.length > windowSize) recentOutcomesRef.current.shift();
+      const acc = recentOutcomesRef.current.reduce((a, o) => a + (o.ok ? 1 : 0), 0) / Math.max(1, recentOutcomesRef.current.length);
+      const medianRt = (() => {
+        const arr = recentOutcomesRef.current.map((o) => o.rt).slice().sort((a, b) => a - b);
+        const mid = Math.floor(arr.length / 2);
+        return arr.length ? (arr.length % 2 ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2) : rt;
+      })();
+      // Targets: ~75% accuracy, median RT < 900ms
+      const targetAcc = 0.75;
+      const fastThresh = 900;
+      // Adjust exposure (harder when good)
+      if (acc >= targetAcc && medianRt <= fastThresh) {
+        setNumExposureMs((ms) => Math.max(120, ms - 20));
+        setNumMinSepPx((sep) => Math.max(18, sep - 2));
+        setNumSimilarity01((s) => Math.min(1, s + 0.06));
+        setNumAnchorSetSize((a) => Math.min(NUM_COUNT_MAX - 1, a + 1));
+        if (numerositySubmode === "compare") {
+          setNumCompareDelta((d) => Math.max(1, d - 1)); // shrink delta: harder
+        }
+      } else if (acc < targetAcc - 0.1 || medianRt > fastThresh + 250) {
+        setNumExposureMs((ms) => Math.min(350, ms + 20));
+        setNumMinSepPx((sep) => Math.min(48, sep + 2));
+        setNumSimilarity01((s) => Math.max(0, s - 0.06));
+        setNumAnchorSetSize((a) => Math.max(NUM_COUNT_MIN + 1, a - 1));
+        if (numerositySubmode === "compare") {
+          setNumCompareDelta((d) => Math.min(3, d + 1)); // grow delta: easier
+        }
+      }
+      // Randomize next count around anchor (prevents knowing ahead of time)
+      if (numerositySubmode === "enumerate") {
+        const jitter = Math.floor(Math.random() * 3) - 1; // -1,0,+1
+        const next = Math.max(NUM_COUNT_MIN, Math.min(NUM_COUNT_MAX, (numAnchorSetSize + jitter)));
+        setSetSize(next);
+      }
+      correctStreakRef.current = 0;
     } else {
       // 3-up/1-down adaptive rule for original modes
       if (correct) {
@@ -493,6 +697,36 @@ export default function Page() {
     finishTrial(correct, rt);
   };
 
+  const handleNumerosityAnswer = (ans: number) => {
+    if (help || paused || phase !== "test" || mode !== "numerosity") return;
+    if (respTimeoutRef.current != null) {
+      clearTimeout(respTimeoutRef.current);
+      respTimeoutRef.current = null;
+    }
+    const rt = performance.now() - testStartRef.current;
+    const correct = ans === numTargetCountRef.current;
+    finishTrial(correct, rt);
+  };
+
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (help || paused || mode !== "saccade" || phase !== "saccade") return;
+    const canvas = e.currentTarget;
+    const rect = canvas.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * canvas.width;
+    const y = ((e.clientY - rect.top) / rect.height) * canvas.height;
+    const tgt = sacTargetRef.current;
+    if (!tgt) return;
+    const dx = x - tgt[0];
+    const dy = y - tgt[1];
+    const dist = Math.hypot(dx, dy);
+    const HIT_R = 45;
+    if (dist <= HIT_R && !sacHitRef.current) {
+      sacHitRef.current = true;
+      setSacHits((v) => v + 1);
+      toneRef.current?.beep(660, 90, 0.14);
+    }
+  };
+
   // Draw frame by phase
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -512,7 +746,9 @@ export default function Page() {
     ctx.fillStyle = "#fff";
     ctx.font = "16px ui-monospace, SFMono-Regular, Menlo, monospace";
     ctx.fillText(`Score: ${points}   Rank: ${rank}`, 16, 36);
-    const mid = `Set size: ${setSize}   Trial: ${trial + 1}`;
+    const mid = mode === "numerosity"
+      ? `Trial: ${trial + 1}`
+      : `Set size: ${setSize}   Trial: ${trial + 1}`;
     const midW = ctx.measureText(mid).width;
     ctx.fillText(mid, Math.floor(w / 2 - midW / 2), 36);
     const right = nextRankThresh
@@ -533,6 +769,22 @@ export default function Page() {
     // Content region
     if (phase === "fix") {
       drawFixation(ctx, cx, cy);
+    } else if (phase === "memA") {
+      // Compare mode: draw array A with label
+      drawNumerosityShapes(ctx, numShapesRef.current, blurOn);
+      ctx.save();
+      ctx.fillStyle = "#111";
+      ctx.font = "bold 48px ui-sans-serif, system-ui";
+      ctx.fillText("A", 32, 120);
+      ctx.restore();
+    } else if (phase === "memB") {
+      // Compare mode: draw array B with label
+      drawNumerosityShapes(ctx, numShapesBRef.current, blurOn);
+      ctx.save();
+      ctx.fillStyle = "#111";
+      ctx.font = "bold 48px ui-sans-serif, system-ui";
+      ctx.fillText("B", 32, 120);
+      ctx.restore();
     } else if (phase === "mem") {
       if (mode === "color") {
         drawArrayColored(
@@ -544,12 +796,34 @@ export default function Page() {
         );
       } else if (mode === "spatial") {
         drawGaborArray(ctx, posRef.current, memFreqsRef.current, blurOn);
+      } else if (mode === "numerosity") {
+        drawNumerosityShapes(ctx, numShapesRef.current, blurOn);
       } else {
         drawArray(ctx, posRef.current, memOrientsRef.current, blurOn);
       }
+    } else if (phase === "saccade" && mode === "saccade") {
+      drawFixation(ctx, cx, cy);
+      const tgt = sacTargetRef.current;
+      if (tgt) {
+        ctx.save();
+        ctx.fillStyle = "rgb(255,140,0)";
+        ctx.beginPath();
+        ctx.arc(tgt[0], tgt[1], 10, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,140,0,0.7)";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(tgt[0], tgt[1], 18, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+      ctx.fillStyle = "#111";
+      ctx.fillText("Click the orange dot", Math.floor(w / 2 - 90), h - 24);
     } else if (phase === "test") {
-      const [px, py] = posRef.current[probeIdxRef.current];
-      highlightProbe(ctx, px, py);
+      if (mode !== "numerosity") {
+        const [px, py] = posRef.current[probeIdxRef.current];
+        highlightProbe(ctx, px, py);
+      }
       if (mode === "color") {
         drawArrayColored(
           ctx,
@@ -560,15 +834,27 @@ export default function Page() {
         );
       } else if (mode === "spatial") {
         drawGaborArray(ctx, posRef.current, testFreqsRef.current, blurOn);
+      } else if (mode === "numerosity") {
+        if (numerositySubmode === "compare") {
+          // Show prompt for compare
+          ctx.fillStyle = "#111";
+          const s = "LEFT = A has more   |   RIGHT = B has more";
+          const sw = ctx.measureText(s).width;
+          ctx.fillText(s, Math.floor(w / 2 - sw / 2), h - 48);
+        }
+        // Enumerate: do not redraw items; force recall without re-encoding
       } else {
         drawArray(ctx, posRef.current, testOrientsRef.current, blurOn);
       }
       ctx.fillStyle = "#111";
-      ctx.fillText(
-        "LEFT = Same   |   RIGHT = Different",
-        Math.floor(w / 2 - 150),
-        h - 24,
-      );
+      const instr =
+        mode === "numerosity"
+          ? numerositySubmode === "compare"
+            ? "LEFT=A more   |   RIGHT=B more"
+            : "Type the count (4–10) or tap a number below"
+          : "LEFT = Same   |   RIGHT = Different";
+      const iw = ctx.measureText(instr).width;
+      ctx.fillText(instr, Math.floor(w / 2 - iw / 2), h - 24);
     }
 
     // Overlays
@@ -582,6 +868,10 @@ export default function Page() {
           ? "Change Detection (Color Bars)"
           : mode === "spatial"
           ? `Change Detection (Spatial Frequency · ${blurOn ? "Blurred" : "No Blur"})`
+          : mode === "numerosity"
+          ? `Numerosity — ${numerositySubmode === "compare" ? "Compare" : "Enumerate"} (${blurOn ? "Blurred" : "No Blur"})`
+          : mode === "saccade"
+          ? `Guided Saccade + Orientation · ${blurOn ? "Blurred" : "No Blur"}`
           : `Change Detection (Orientation · ${blurOn ? "Blurred" : "No Blur"})`;
       ctx.fillText(
         title,
@@ -611,6 +901,38 @@ export default function Page() {
               "Keys — LEFT: Same, RIGHT: Different, H: Help, P: Pause, R: Reset Stats",
               "Scoring — +10 correct, +5 bonus if ≤ 600 ms.",
               "Adaptive — Block rule: after 20 trials, ≥90% → +2, else −1 (1–7).",
+              `${blurOn ? "Blurred (BG)" : "No blur (NBG)"} condition.`,
+              "Press any key to begin / close help.",
+            ]
+          : mode === "numerosity"
+          ? numerositySubmode === "compare"
+            ? [
+                `SEQUENCE: Two brief arrays (~${Math.round(Math.max(120, numExposureMs))} ms each) appear A then B.`,
+                "TASK: Decide which has MORE items (LEFT=A, RIGHT=B).",
+                "Scoring — +10 correct, +5 bonus if ≤ 600 ms.",
+                "Adaptive — exposure, spacing, similarity, and anchor ranges adjust.",
+                `${blurOn ? "Blurred (BG)" : "No blur (NBG)"} condition.`,
+                "Press any key to begin / close help.",
+              ]
+            : [
+                `MEMORY: A brief array (~${Math.round(Math.max(120, numExposureMs))} ms) of ${blurOn ? "blurred" : "clear"} varied shapes appears.`,
+                "TASK: Report how many items you saw (4–10).",
+                "Keys — 4–9, 0→10; on-screen buttons also work.",
+                "Scoring — +10 correct, +5 bonus if ≤ 600 ms.",
+                "Adaptive — exposure, spacing, similarity, and count jitter adjust to performance.",
+                `${blurOn ? "Blurred (BG)" : "No blur (NBG)"} condition.`,
+                "Press any key to begin / close help.",
+              ]
+          : mode === "saccade"
+          ? [
+              `MEMORY: A brief array of ${blurOn ? "blurred" : "clear"} bars appears.`,
+              "GUIDE: During the delay, an ORANGE DOT briefly appears at an unpredictable location.",
+              "ACTION: Saccade to it and CLICK the dot while it is visible.",
+              "TEST: Afterwards, one item is cued; its orientation may differ by 20°.",
+              "TASK: Decide if the test array is the SAME or DIFFERENT.",
+              "Keys — LEFT: Same, RIGHT: Different, H: Help, P: Pause, R: Reset Stats",
+              "Scoring — +10 correct, +5 bonus if ≤ 600 ms. Dot clicks are tracked for compliance.",
+              "Adaptive — 3-up/1-down: +1 after 3 correct, −1 after 1 incorrect (2–10).",
               `${blurOn ? "Blurred (BG)" : "No blur (NBG)"} condition.`,
               "Press any key to begin / close help.",
             ]
@@ -666,6 +988,11 @@ export default function Page() {
     paused,
     toast,
     mode,
+    numerositySubmode,
+    blurOn,
+    sacHits,
+    sacTotal,
+    numExposureMs,
   ]);
 
   // Trial FSM
@@ -681,23 +1008,68 @@ export default function Page() {
     const radius = Math.min(w, h) / 3;
 
     // Generate memory array
-    posRef.current = layoutPositions(cx, cy, radius, setSize);
-    memOrientsRef.current = randomOrientations(setSize);
-    memHuesRef.current =
-      mode === "color" ? randomHues(setSize) : new Array(setSize).fill(0);
-    memFreqsRef.current =
-      mode === "spatial" ? randomFreqs(setSize) : new Array(setSize).fill(FREQ_MIN);
+    if (mode === "numerosity") {
+      if (numerositySubmode === "compare") {
+        // Generate two arrays A and B with difference = delta
+        // Randomize which is larger (50% swap)
+        const base = numAnchorSetSize;
+        const delta = numCompareDelta;
+        const smaller = Math.max(NUM_COUNT_MIN, base - Math.floor(delta / 2));
+        const larger = Math.min(NUM_COUNT_MAX, smaller + delta);
+        const swap = Math.random() < 0.5;
+        const cntA = swap ? larger : smaller;
+        const cntB = swap ? smaller : larger;
+        numCountARef.current = cntA;
+        numCountBRef.current = cntB;
+        numBLargerRef.current = cntB > cntA;
+        // Generate shapes for both A and B
+        numShapesRef.current = generateNumerosityShapes(cx, cy, radius, cntA, numMinSepPx, numSimilarity01);
+        numShapesBRef.current = generateNumerosityShapes(cx, cy, radius, cntB, numMinSepPx, numSimilarity01);
+        posRef.current = [];
+      } else {
+        // Enumerate
+        numTargetCountRef.current = Math.max(NUM_COUNT_MIN, Math.min(NUM_COUNT_MAX, setSize));
+        numShapesRef.current = generateNumerosityShapes(
+          cx,
+          cy,
+          radius,
+          numTargetCountRef.current,
+          numMinSepPx,
+          numSimilarity01,
+        );
+        posRef.current = [];
+      }
+    } else {
+      posRef.current = layoutPositions(cx, cy, radius, setSize);
+      memOrientsRef.current = randomOrientations(setSize);
+      memHuesRef.current =
+        mode === "color" ? randomHues(setSize) : new Array(setSize).fill(0);
+      memFreqsRef.current =
+        mode === "spatial" ? randomFreqs(setSize) : new Array(setSize).fill(FREQ_MIN);
+    }
 
     // Decide change and probe
-    changeRef.current = Math.random() < 0.5;
-    probeIdxRef.current = Math.floor(Math.random() * setSize);
+    if (mode === "numerosity") {
+      if (numerositySubmode === "compare") {
+        changeRef.current = false; // not used in compare (we use bLarger instead)
+        probeIdxRef.current = 0;
+      } else {
+        changeRef.current = false; // not used
+        probeIdxRef.current = 0;
+      }
+    } else {
+      changeRef.current = Math.random() < 0.5;
+      probeIdxRef.current = Math.floor(Math.random() * setSize);
+    }
 
     // Build test arrays
-    testOrientsRef.current = [...memOrientsRef.current];
-    testHuesRef.current = [...memHuesRef.current];
-    testFreqsRef.current = [...memFreqsRef.current];
+    if (mode !== "numerosity") {
+      testOrientsRef.current = [...memOrientsRef.current];
+      testHuesRef.current = [...memHuesRef.current];
+      testFreqsRef.current = [...memFreqsRef.current];
+    }
 
-    if (changeRef.current) {
+    if (mode !== "numerosity" && changeRef.current) {
       if (mode === "color") {
         const sign = Math.random() < 0.5 ? 1 : -1;
         testHuesRef.current[probeIdxRef.current] =
@@ -721,19 +1093,69 @@ export default function Page() {
     setTimeout(() => {
       setPhase("preblank");
       setTimeout(() => {
-        setPhase("mem");
-        setTimeout(() => {
-          setPhase("isi");
+        // Compare mode: memA -> isiA -> memB -> isiB -> test
+        if (mode === "numerosity" && numerositySubmode === "compare") {
+          setPhase("memA");
           setTimeout(() => {
-            testStartRef.current = performance.now();
-            setPhase("test");
-            respElapsedRef.current = 0;
-            respTimeoutRef.current = window.setTimeout(() => {
-              // timeout -> incorrect
-              finishTrial(false, RESP_WINDOW_MS);
-            }, RESP_WINDOW_MS);
-          }, ISI_MS);
-        }, MEM_MS);
+            setPhase("isiA");
+            setTimeout(() => {
+              setPhase("memB");
+              setTimeout(() => {
+                setPhase("isiB");
+                setTimeout(() => {
+                  testStartRef.current = performance.now();
+                  setPhase("test");
+                  respElapsedRef.current = 0;
+                  respTimeoutRef.current = window.setTimeout(() => {
+                    finishTrial(false, RESP_WINDOW_MS);
+                  }, RESP_WINDOW_MS);
+                }, ISI_MS / 2); // brief isiB
+              }, numExposureMs); // memB
+            }, ISI_MS / 2); // brief isiA
+          }, numExposureMs); // memA
+        } else {
+          setPhase("mem");
+          sacTargetRef.current = null;
+          sacHitRef.current = false;
+          setTimeout(() => {
+            if (mode === "saccade") {
+              const th = Math.random() * Math.PI * 2;
+              const r2 = radius * 0.78;
+              sacTargetRef.current = [
+                cx + Math.cos(th) * r2,
+                cy + Math.sin(th) * r2,
+              ];
+              sacHitRef.current = false;
+              setSacTotal((v) => v + 1);
+              setPhase("saccade");
+              setTimeout(() => {
+                sacTargetRef.current = null;
+                if (!sacHitRef.current) {
+                  toneRef.current?.beep(300, 90, 0.08);
+                }
+                setPhase("isi");
+                setTimeout(() => {
+                  testStartRef.current = performance.now();
+                  setPhase("test");
+                  respElapsedRef.current = 0;
+                  respTimeoutRef.current = window.setTimeout(() => {
+                    finishTrial(false, RESP_WINDOW_MS);
+                  }, RESP_WINDOW_MS);
+                }, SAC_BLANK_MS);
+              }, SAC_ON_MS);
+            } else {
+              setPhase("isi");
+              setTimeout(() => {
+                testStartRef.current = performance.now();
+                setPhase("test");
+                respElapsedRef.current = 0;
+                respTimeoutRef.current = window.setTimeout(() => {
+                  finishTrial(false, RESP_WINDOW_MS);
+                }, RESP_WINDOW_MS);
+              }, ISI_MS);
+            }
+          }, mode === "numerosity" ? numExposureMs : MEM_MS);
+        }
       }, PRE_BLANK_MS);
     }, FIX_MS);
   };
@@ -771,7 +1193,10 @@ export default function Page() {
           setPaused(true);
         } else {
           if (phase === "test") {
-            const remaining = Math.max(0, RESP_WINDOW_MS - respElapsedRef.current);
+            const remaining = Math.max(
+              0,
+              RESP_WINDOW_MS - respElapsedRef.current,
+            );
             testStartRef.current = performance.now() - respElapsedRef.current;
             respTimeoutRef.current = window.setTimeout(() => {
               finishTrial(false, RESP_WINDOW_MS);
@@ -783,12 +1208,39 @@ export default function Page() {
       }
       if (paused) return;
       if (phase !== "test") return;
+      if (mode === "numerosity") {
+        if (numerositySubmode === "compare") {
+          if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+            // LEFT = A more, RIGHT = B more
+            if (respTimeoutRef.current != null) {
+              clearTimeout(respTimeoutRef.current);
+              respTimeoutRef.current = null;
+            }
+            const rt = performance.now() - testStartRef.current;
+            const userSaysAMore = e.key === "ArrowLeft";
+            const userSaysBMore = e.key === "ArrowRight";
+            const correct = (userSaysAMore && !numBLargerRef.current) || (userSaysBMore && numBLargerRef.current);
+            finishTrial(correct, rt);
+          }
+          return;
+        }
+        // Enumerate: number keys 4-9, 0->10
+        if (e.key >= "4" && e.key <= "9") {
+          handleNumerosityAnswer(parseInt(e.key, 10));
+          return;
+        }
+        if (e.key === "0") {
+          handleNumerosityAnswer(10);
+          return;
+        }
+        return;
+      }
       if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
       handleResponse(e.key === "ArrowRight");
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [phase, help, paused, points, setSize, barTotal, barCorrect]);
+  }, [phase, help, paused, points, setSize, barTotal, barCorrect, mode]);
 
   // Kick off first trial when help dismissed
   useEffect(() => {
@@ -799,7 +1251,10 @@ export default function Page() {
   useEffect(() => {
     localStorage.setItem("mode", mode);
     localStorage.setItem("blur_on", blurOn ? "1" : "0");
-  }, [mode]);
+    if (mode === "numerosity") {
+      localStorage.setItem("numerosity_submode", numerositySubmode);
+    }
+  }, [mode, blurOn]);
 
   useEffect(() => {
     localStorage.setItem("blur_on", blurOn ? "1" : "0");
@@ -812,7 +1267,14 @@ export default function Page() {
     localStorage.setItem("set_trial", JSON.stringify(trial));
     localStorage.setItem("bar_total", JSON.stringify(barTotal));
     localStorage.setItem("bar_correct", JSON.stringify(barCorrect));
-  }, [setSize, points, trial, barTotal, barCorrect]);
+    localStorage.setItem("sac_total", JSON.stringify(sacTotal));
+    localStorage.setItem("sac_hits", JSON.stringify(sacHits));
+    localStorage.setItem("num_exposure_ms", JSON.stringify(numExposureMs));
+    localStorage.setItem("num_min_sep", JSON.stringify(numMinSepPx));
+    localStorage.setItem("num_similarity01", JSON.stringify(numSimilarity01));
+    localStorage.setItem("num_anchor_setsize", JSON.stringify(numAnchorSetSize));
+    localStorage.setItem("num_compare_delta", JSON.stringify(numCompareDelta));
+  }, [setSize, points, trial, barTotal, barCorrect, sacTotal, sacHits, numExposureMs, numMinSepPx, numSimilarity01, numAnchorSetSize, numCompareDelta]);
 
   // Cleanup timers on unmount
   useEffect(() => {
@@ -833,14 +1295,55 @@ export default function Page() {
             <button
               onClick={() =>
                 setMode((m) =>
-                  m === "orientation" ? "color" : m === "color" ? "spatial" : "orientation",
+                  m === "orientation"
+                    ? "color"
+                    : m === "color"
+                    ? "spatial"
+                    : m === "spatial"
+                    ? "numerosity"
+                    : m === "numerosity"
+                    ? "saccade"
+                    : "orientation",
                 )
               }
               className="px-3 py-1 rounded-md border border-neutral-300 text-xs font-mono hover:bg-neutral-50"
               aria-label="Cycle training mode"
             >
-              Mode: {mode === "orientation" ? "Orientation" : mode === "color" ? "Color" : "Spatial"}
+              Mode: {mode === "orientation"
+                ? "Orientation"
+                : mode === "color"
+                ? "Color"
+                : mode === "spatial"
+                ? "Spatial"
+                : mode === "numerosity"
+                ? "Numerosity"
+                : "Saccade"}
             </button>
+            {mode === "numerosity" && (
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] uppercase text-neutral-500">Submode</span>
+                <button
+                  onClick={() => setNumerositySubmode("enumerate")}
+                  className={`px-2 py-1 rounded-md border text-xs ${
+                    numerositySubmode === "enumerate"
+                      ? "border-blue-500 text-blue-600"
+                      : "border-neutral-300 text-neutral-700"
+                  }`}
+                >
+                  Enumerate
+                </button>
+                <button
+                  onClick={() => setNumerositySubmode("compare")}
+                  className={`px-2 py-1 rounded-md border text-xs ${
+                    numerositySubmode === "compare"
+                      ? "border-blue-500 text-blue-600"
+                      : "border-neutral-300 text-neutral-700"
+                  }`}
+                >
+                  Compare
+                </button>
+              </div>
+            )}
             <button
               onClick={() => setBlurOn((b) => !b)}
               className="px-3 py-1 rounded-md border border-neutral-300 text-xs font-mono hover:bg-neutral-50"
@@ -856,31 +1359,54 @@ export default function Page() {
             width={1024}
             height={700}
             className="w-full rounded-xl border border-neutral-200 bg-neutral-200"
+            onClick={handleCanvasClick}
           />
           <div className="mt-3 flex items-center justify-between text-xs text-neutral-600 font-mono">
             <div>
-              LEFT = Same · RIGHT = Different · H = Help · P = Pause · R = Reset
-              Stats
+              {mode === "numerosity"
+                ? numerositySubmode === "compare"
+                  ? "LEFT=A more · RIGHT=B more · H = Help · P = Pause · R = Reset Stats"
+                  : "4–9, 0→10 · H = Help · P = Pause · R = Reset Stats"
+                : "LEFT = Same · RIGHT = Different · H = Help · P = Pause · R = Reset Stats"}
             </div>
             <div className="flex items-center gap-2">
               <div>
                 Fix {FIX_MS} · Pre {PRE_BLANK_MS} · Mem {MEM_MS} · ISI {ISI_MS} ·
                 Resp {RESP_WINDOW_MS}
               </div>
-              <button
-                onClick={() => handleResponse(false)}
-                disabled={help || paused || phase !== "test"}
-                className="px-3 py-1 rounded-md border border-neutral-300 text-xs hover:bg-neutral-50 disabled:opacity-50"
-              >
-                Same
-              </button>
-              <button
-                onClick={() => handleResponse(true)}
-                disabled={help || paused || phase !== "test"}
-                className="px-3 py-1 rounded-md border border-neutral-300 text-xs hover:bg-neutral-50 disabled:opacity-50"
-              >
-                Different
-              </button>
+              {mode !== "numerosity" ? (
+                <>
+                  <button
+                    onClick={() => handleResponse(false)}
+                    disabled={help || paused || phase !== "test"}
+                    className="px-3 py-1 rounded-md border border-neutral-300 text-xs hover:bg-neutral-50 disabled:opacity-50"
+                  >
+                    Same
+                  </button>
+                  <button
+                    onClick={() => handleResponse(true)}
+                    disabled={help || paused || phase !== "test"}
+                    className="px-3 py-1 rounded-md border border-neutral-300 text-xs hover:bg-neutral-50 disabled:opacity-50"
+                  >
+                    Different
+                  </button>
+                </>
+              ) : (
+                numerositySubmode === "compare" ? null : (
+                <div className="flex flex-wrap gap-1">
+                  {[4,5,6,7,8,9,10].map((n) => (
+                    <button
+                      key={n}
+                      onClick={() => handleNumerosityAnswer(n)}
+                      disabled={help || paused || phase !== "test"}
+                      className="px-2 py-1 rounded-md border border-neutral-300 text-xs hover:bg-neutral-50 disabled:opacity-50"
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+                )
+              )}
             </div>
           </div>
         </div>
