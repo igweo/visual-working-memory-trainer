@@ -472,7 +472,29 @@ function highlightProbe(ctx: CanvasRenderingContext2D, x: number, y: number) {
 // -------------------- Main Component --------------------
 export default function Page() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [w, h] = [1024, 700]; // fixed safe area inside the card
+  // Fullscreen canvas sizing
+  const [vp, setVp] = useState({ w: 0, h: 0, dpr: 1 });
+  useEffect(() => {
+    const resize = () => {
+      const dpr = Math.max(1, Math.min(2, (typeof window !== "undefined" && (window as any).devicePixelRatio) || 1));
+      const w = typeof window !== "undefined" ? window.innerWidth : 1024;
+      const h = typeof window !== "undefined" ? window.innerHeight : 700;
+      setVp({ w, h, dpr });
+      const c = canvasRef.current;
+      if (c) {
+        c.style.width = `${w}px`;
+        c.style.height = `${h}px`;
+        c.width = Math.floor(w * dpr);
+        c.height = Math.floor(h * dpr);
+      }
+    };
+    resize();
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, []);
+  const w = vp.w || 1024;
+  const h = vp.h || 700;
+  const dpr = vp.dpr || 1;
 
   // Session state
   const [setSize, setSetSize] = useState(1);
@@ -732,6 +754,8 @@ export default function Page() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d")!;
+    // Scale drawing for device pixel ratio while using CSS pixel coordinates
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     ctx.fillStyle = "#e7e7e7"; // lab-clean gray
     ctx.fillRect(0, 0, w, h);
@@ -993,6 +1017,9 @@ export default function Page() {
     sacHits,
     sacTotal,
     numExposureMs,
+    w,
+    h,
+    dpr,
   ]);
 
   // Trial FSM
@@ -1284,131 +1311,123 @@ export default function Page() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-neutral-100 text-neutral-900 flex items-center justify-center p-6">
-      <div className="w-[1100px] max-w-full rounded-2xl shadow-sm border border-neutral-200 bg-white">
-        <div className="px-6 py-4 border-b border-neutral-200 flex items-center justify-between">
-          <div className="font-mono text-sm tracking-tight">
-            VWM Training · blurred bars
-          </div>
-          {/* added: simple toggle button */}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() =>
-                setMode((m) =>
-                  m === "orientation"
-                    ? "color"
-                    : m === "color"
-                    ? "spatial"
-                    : m === "spatial"
-                    ? "numerosity"
-                    : m === "numerosity"
-                    ? "saccade"
-                    : "orientation",
-                )
-              }
-              className="px-3 py-1 rounded-md border border-neutral-300 text-xs font-mono hover:bg-neutral-50"
-              aria-label="Cycle training mode"
-            >
-              Mode: {mode === "orientation"
-                ? "Orientation"
-                : mode === "color"
-                ? "Color"
-                : mode === "spatial"
-                ? "Spatial"
-                : mode === "numerosity"
-                ? "Numerosity"
-                : "Saccade"}
-            </button>
-            {mode === "numerosity" && (
-              <div className="flex items-center gap-1">
-                <span className="text-[10px] uppercase text-neutral-500">Submode</span>
-                <button
-                  onClick={() => setNumerositySubmode("enumerate")}
-                  className={`px-2 py-1 rounded-md border text-xs ${
-                    numerositySubmode === "enumerate"
-                      ? "border-blue-500 text-blue-600"
-                      : "border-neutral-300 text-neutral-700"
-                  }`}
-                >
-                  Enumerate
-                </button>
-                <button
-                  onClick={() => setNumerositySubmode("compare")}
-                  className={`px-2 py-1 rounded-md border text-xs ${
-                    numerositySubmode === "compare"
-                      ? "border-blue-500 text-blue-600"
-                      : "border-neutral-300 text-neutral-700"
-                  }`}
-                >
-                  Compare
-                </button>
-              </div>
-            )}
-            <button
-              onClick={() => setBlurOn((b) => !b)}
-              className="px-3 py-1 rounded-md border border-neutral-300 text-xs font-mono hover:bg-neutral-50"
-              aria-label="Toggle blur condition"
-            >
-              {blurOn ? "BG: Blurred" : "NBG: No Blur"}
-            </button>
-          </div>
+    <div className="fixed inset-0 bg-neutral-100 text-neutral-900">
+      <canvas
+        ref={canvasRef}
+        onClick={handleCanvasClick}
+        className="block w-full h-full"
+      />
+      <div className="absolute top-3 left-3 right-3 flex items-center justify-between">
+        <div className="font-mono text-sm tracking-tight px-3 py-1 rounded-md bg-white/80 border border-neutral-200 backdrop-blur">
+          VWM Training
         </div>
-        <div className="p-4">
-          <canvas
-            ref={canvasRef}
-            width={1024}
-            height={700}
-            className="w-full rounded-xl border border-neutral-200 bg-neutral-200"
-            onClick={handleCanvasClick}
-          />
-          <div className="mt-3 flex items-center justify-between text-xs text-neutral-600 font-mono">
-            <div>
-              {mode === "numerosity"
-                ? numerositySubmode === "compare"
-                  ? "LEFT=A more · RIGHT=B more · H = Help · P = Pause · R = Reset Stats"
-                  : "4–9, 0→10 · H = Help · P = Pause · R = Reset Stats"
-                : "LEFT = Same · RIGHT = Different · H = Help · P = Pause · R = Reset Stats"}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() =>
+              setMode((m) =>
+                m === "orientation"
+                  ? "color"
+                  : m === "color"
+                  ? "spatial"
+                  : m === "spatial"
+                  ? "numerosity"
+                  : m === "numerosity"
+                  ? "saccade"
+                  : "orientation",
+              )
+            }
+            className="px-3 py-1 rounded-md border border-neutral-300 text-xs font-mono bg-white/80 backdrop-blur hover:bg-white"
+            aria-label="Cycle training mode"
+          >
+            Mode: {mode === "orientation"
+              ? "Orientation"
+              : mode === "color"
+              ? "Color"
+              : mode === "spatial"
+              ? "Spatial"
+              : mode === "numerosity"
+              ? "Numerosity"
+              : "Saccade"}
+          </button>
+          {mode === "numerosity" && (
+            <div className="flex items-center gap-1">
+              <span className="text-[10px] uppercase text-neutral-600">Submode</span>
+              <button
+                onClick={() => setNumerositySubmode("enumerate")}
+                className={`px-2 py-1 rounded-md border text-xs bg-white/80 backdrop-blur ${
+                  numerositySubmode === "enumerate"
+                    ? "border-blue-500 text-blue-600"
+                    : "border-neutral-300 text-neutral-700"
+                }`}
+              >
+                Enumerate
+              </button>
+              <button
+                onClick={() => setNumerositySubmode("compare")}
+                className={`px-2 py-1 rounded-md border text-xs bg-white/80 backdrop-blur ${
+                  numerositySubmode === "compare"
+                    ? "border-blue-500 text-blue-600"
+                    : "border-neutral-300 text-neutral-700"
+                }`}
+              >
+                Compare
+              </button>
             </div>
-            <div className="flex items-center gap-2">
-              <div>
-                Fix {FIX_MS} · Pre {PRE_BLANK_MS} · Mem {MEM_MS} · ISI {ISI_MS} ·
-                Resp {RESP_WINDOW_MS}
-              </div>
-              {mode !== "numerosity" ? (
-                <>
-                  <button
-                    onClick={() => handleResponse(false)}
-                    disabled={help || paused || phase !== "test"}
-                    className="px-3 py-1 rounded-md border border-neutral-300 text-xs hover:bg-neutral-50 disabled:opacity-50"
-                  >
-                    Same
-                  </button>
-                  <button
-                    onClick={() => handleResponse(true)}
-                    disabled={help || paused || phase !== "test"}
-                    className="px-3 py-1 rounded-md border border-neutral-300 text-xs hover:bg-neutral-50 disabled:opacity-50"
-                  >
-                    Different
-                  </button>
-                </>
-              ) : (
-                numerositySubmode === "compare" ? null : (
-                <div className="flex flex-wrap gap-1">
-                  {[4,5,6,7,8,9,10].map((n) => (
-                    <button
-                      key={n}
-                      onClick={() => handleNumerosityAnswer(n)}
-                      disabled={help || paused || phase !== "test"}
-                      className="px-2 py-1 rounded-md border border-neutral-300 text-xs hover:bg-neutral-50 disabled:opacity-50"
-                    >
-                      {n}
-                    </button>
-                  ))}
-                </div>
-                )
-              )}
+          )}
+          <button
+            onClick={() => setBlurOn((b) => !b)}
+            className="px-3 py-1 rounded-md border border-neutral-300 text-xs font-mono bg-white/80 backdrop-blur hover:bg-white"
+            aria-label="Toggle blur condition"
+          >
+            {blurOn ? "BG: Blurred" : "NBG: No Blur"}
+          </button>
+        </div>
+      </div>
+      <div className="absolute left-3 right-3 bottom-3 flex items-center justify-between text-xs text-neutral-700 font-mono">
+        <div className="px-2 py-1 rounded-md bg-white/80 border border-neutral-200 backdrop-blur">
+          {mode === "numerosity"
+            ? numerositySubmode === "compare"
+              ? "LEFT=A more · RIGHT=B more · H = Help · P = Pause · R = Reset Stats"
+              : "4–9, 0→10 · H = Help · P = Pause · R = Reset Stats"
+            : "LEFT = Same · RIGHT = Different · H = Help · P = Pause · R = Reset Stats"}
+          <span className="ml-2 opacity-70">
+            (Fix {FIX_MS} · Pre {PRE_BLANK_MS} · Mem {MEM_MS} · ISI {ISI_MS} · Resp {RESP_WINDOW_MS})
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          {mode !== "numerosity" ? (
+            <>
+              <button
+                onClick={() => handleResponse(false)}
+                disabled={help || paused || phase !== "test"}
+                className="px-3 py-1 rounded-md border border-neutral-300 text-xs bg-white/80 backdrop-blur hover:bg-white disabled:opacity-50"
+              >
+                Same
+              </button>
+              <button
+                onClick={() => handleResponse(true)}
+                disabled={help || paused || phase !== "test"}
+                className="px-3 py-1 rounded-md border border-neutral-300 text-xs bg-white/80 backdrop-blur hover:bg-white disabled:opacity-50"
+              >
+                Different
+              </button>
+            </>
+          ) : (
+            numerositySubmode === "compare" ? null : (
+            <div className="flex flex-wrap gap-1">
+              {[4,5,6,7,8,9,10].map((n) => (
+                <button
+                  key={n}
+                  onClick={() => handleNumerosityAnswer(n)}
+                  disabled={help || paused || phase !== "test"}
+                  className="px-2 py-1 rounded-md border border-neutral-300 text-xs bg-white/80 backdrop-blur hover:bg-white disabled:opacity-50"
+                >
+                  {n}
+                </button>
+              ))}
             </div>
-          </div>
+            )
+          )}
         </div>
       </div>
     </div>
