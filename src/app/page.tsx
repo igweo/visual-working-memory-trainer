@@ -529,6 +529,10 @@ export default function Page() {
   const [numAnchorSetSize, setNumAnchorSetSize] = useState(5); // center of distribution (4–10 bracket)
   const [numCompareDelta, setNumCompareDelta] = useState(2); // difference between A and B in compare mode
   const recentOutcomesRef = useRef<Array<{ ok: boolean; rt: number }>>([]);
+  
+  // Enumerate pool-based scaling
+  const [enumeratePool, setEnumeratePool] = useState<number[]>([4, 5, 6]); // starting pool
+  const [consecutiveCorrectAtMax, setConsecutiveCorrectAtMax] = useState(0); // consecutive correct at highest number
 
   const rank = useMemo(() => rankFor(points), [points]);
   const [nextRankName, nextRankThresh] = useMemo(
@@ -575,6 +579,21 @@ export default function Page() {
     if (Number.isFinite(anc) && anc >= NUM_SET_MIN && anc <= NUM_SET_MAX) setNumAnchorSetSize(anc);
     const delta = getDataAsNum("num_compare_delta");
     if (Number.isFinite(delta) && delta >= 1 && delta <= 3) setNumCompareDelta(delta);
+    
+    // Load enumerate pool state
+    const poolStr = localStorage.getItem("enumerate_pool");
+    if (poolStr) {
+      try {
+        const pool = JSON.parse(poolStr);
+        if (Array.isArray(pool) && pool.length > 0 && pool.every(n => n >= NUM_COUNT_MIN && n <= NUM_COUNT_MAX)) {
+          setEnumeratePool(pool);
+        }
+      } catch (e) {
+        // Invalid JSON, use default
+      }
+    }
+    const consecutive = getDataAsNum("consecutive_correct_at_max");
+    if (Number.isFinite(consecutive) && consecutive >= 0) setConsecutiveCorrectAtMax(consecutive);
   }, []);
 
   // Trial content refs
@@ -631,42 +650,57 @@ export default function Page() {
       if (!correct) correctStreakRef.current = 0;
       if (correct) correctStreakRef.current += 1; // tracked but not used here
     } else if (mode === "numerosity") {
-      // Multi-parameter adaptation (hide count predictability)
-      const windowSize = 16;
-      recentOutcomesRef.current.push({ ok: correct, rt });
-      if (recentOutcomesRef.current.length > windowSize) recentOutcomesRef.current.shift();
-      const acc = recentOutcomesRef.current.reduce((a, o) => a + (o.ok ? 1 : 0), 0) / Math.max(1, recentOutcomesRef.current.length);
-      const medianRt = (() => {
-        const arr = recentOutcomesRef.current.map((o) => o.rt).slice().sort((a, b) => a - b);
-        const mid = Math.floor(arr.length / 2);
-        return arr.length ? (arr.length % 2 ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2) : rt;
-      })();
-      // Targets: ~75% accuracy, median RT < 900ms
-      const targetAcc = 0.75;
-      const fastThresh = 900;
-      // Adjust exposure (harder when good)
-      if (acc >= targetAcc && medianRt <= fastThresh) {
-        setNumExposureMs((ms) => Math.max(120, ms - 20));
-        setNumMinSepPx((sep) => Math.max(18, sep - 2));
-        setNumSimilarity01((s) => Math.min(1, s + 0.06));
-        setNumAnchorSetSize((a) => Math.min(NUM_COUNT_MAX - 1, a + 1));
-        if (numerositySubmode === "compare") {
-          setNumCompareDelta((d) => Math.max(1, d - 1)); // shrink delta: harder
+      if (numerositySubmode === "enumerate") {
+        // New pool-based enumerate scaling
+        const maxInPool = Math.max(...enumeratePool);
+        const wasCorrectAtMax = correct && setSize === maxInPool;
+        
+        if (wasCorrectAtMax) {
+          setConsecutiveCorrectAtMax((count) => count + 1);
+        } else {
+          setConsecutiveCorrectAtMax(0);
         }
-      } else if (acc < targetAcc - 0.1 || medianRt > fastThresh + 250) {
-        setNumExposureMs((ms) => Math.min(350, ms + 20));
-        setNumMinSepPx((sep) => Math.min(48, sep + 2));
-        setNumSimilarity01((s) => Math.max(0, s - 0.06));
-        setNumAnchorSetSize((a) => Math.max(NUM_COUNT_MIN + 1, a - 1));
-        if (numerositySubmode === "compare") {
+        
+        // If 3 consecutive correct at max, add next number to pool
+        if (consecutiveCorrectAtMax + (wasCorrectAtMax ? 1 : 0) >= 3) {
+          const nextNumber = maxInPool + 1;
+          if (nextNumber <= NUM_COUNT_MAX) {
+            setEnumeratePool((pool) => [...pool, nextNumber]);
+            setConsecutiveCorrectAtMax(0);
+          }
+        }
+        
+        // Randomly select from pool for next trial
+        const randomIndex = Math.floor(Math.random() * enumeratePool.length);
+        setSetSize(enumeratePool[randomIndex]);
+      } else {
+        // Compare mode: Multi-parameter adaptation (hide count predictability)
+        const windowSize = 16;
+        recentOutcomesRef.current.push({ ok: correct, rt });
+        if (recentOutcomesRef.current.length > windowSize) recentOutcomesRef.current.shift();
+        const acc = recentOutcomesRef.current.reduce((a, o) => a + (o.ok ? 1 : 0), 0) / Math.max(1, recentOutcomesRef.current.length);
+        const medianRt = (() => {
+          const arr = recentOutcomesRef.current.map((o) => o.rt).slice().sort((a, b) => a - b);
+          const mid = Math.floor(arr.length / 2);
+          return arr.length ? (arr.length % 2 ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2) : rt;
+        })();
+        // Targets: ~75% accuracy, median RT < 900ms
+        const targetAcc = 0.75;
+        const fastThresh = 900;
+        // Adjust exposure (harder when good)
+        if (acc >= targetAcc && medianRt <= fastThresh) {
+          setNumExposureMs((ms) => Math.max(120, ms - 20));
+          setNumMinSepPx((sep) => Math.max(18, sep - 2));
+          setNumSimilarity01((s) => Math.min(1, s + 0.06));
+          setNumAnchorSetSize((a) => Math.min(NUM_COUNT_MAX - 1, a + 1));
+          setNumCompareDelta((d) => Math.max(1, d - 1)); // shrink delta: harder
+        } else if (acc < targetAcc - 0.1 || medianRt > fastThresh + 250) {
+          setNumExposureMs((ms) => Math.min(350, ms + 20));
+          setNumMinSepPx((sep) => Math.min(48, sep + 2));
+          setNumSimilarity01((s) => Math.max(0, s - 0.06));
+          setNumAnchorSetSize((a) => Math.max(NUM_COUNT_MIN + 1, a - 1));
           setNumCompareDelta((d) => Math.min(3, d + 1)); // grow delta: easier
         }
-      }
-      // Randomize next count around anchor (prevents knowing ahead of time)
-      if (numerositySubmode === "enumerate") {
-        const jitter = Math.floor(Math.random() * 3) - 1; // -1,0,+1
-        const next = Math.max(NUM_COUNT_MIN, Math.min(NUM_COUNT_MAX, (numAnchorSetSize + jitter)));
-        setSetSize(next);
       }
       correctStreakRef.current = 0;
     } else {
@@ -771,7 +805,9 @@ export default function Page() {
     ctx.font = "16px ui-monospace, SFMono-Regular, Menlo, monospace";
     ctx.fillText(`Score: ${points}   Rank: ${rank}`, 16, 36);
     const mid = mode === "numerosity"
-      ? `Trial: ${trial + 1}`
+      ? numerositySubmode === "enumerate"
+        ? `Pool: [${enumeratePool.join(', ')}]   Trial: ${trial + 1}`
+        : `Trial: ${trial + 1}`
       : `Set size: ${setSize}   Trial: ${trial + 1}`;
     const midW = ctx.measureText(mid).width;
     ctx.fillText(mid, Math.floor(w / 2 - midW / 2), 36);
@@ -943,7 +979,8 @@ export default function Page() {
                 "TASK: Report how many items you saw (4–10).",
                 "Keys — 4–9, 0→10; on-screen buttons also work.",
                 "Scoring — +10 correct, +5 bonus if ≤ 600 ms.",
-                "Adaptive — exposure, spacing, similarity, and count jitter adjust to performance.",
+                "Adaptive — Pool-based scaling: 3 consecutive correct at max number adds next number to pool.",
+                `Current pool: [${enumeratePool.join(', ')}] | Consecutive at max: ${consecutiveCorrectAtMax}`,
                 `${blurOn ? "Blurred (BG)" : "No blur (NBG)"} condition.`,
                 "Press any key to begin / close help.",
               ]
@@ -1017,6 +1054,8 @@ export default function Page() {
     sacHits,
     sacTotal,
     numExposureMs,
+    enumeratePool,
+    consecutiveCorrectAtMax,
     w,
     h,
     dpr,
@@ -1202,6 +1241,10 @@ export default function Page() {
         localStorage.setItem("set_trial", "0"); // fixed key
         localStorage.setItem("bar_total", "0");
         localStorage.setItem("bar_correct", "0");
+        localStorage.setItem("enumerate_pool", JSON.stringify([4, 5, 6]));
+        localStorage.setItem("consecutive_correct_at_max", "0");
+        setEnumeratePool([4, 5, 6]);
+        setConsecutiveCorrectAtMax(0);
         return;
       }
       if (e.key === "h" || e.key === "H") {
@@ -1301,7 +1344,9 @@ export default function Page() {
     localStorage.setItem("num_similarity01", JSON.stringify(numSimilarity01));
     localStorage.setItem("num_anchor_setsize", JSON.stringify(numAnchorSetSize));
     localStorage.setItem("num_compare_delta", JSON.stringify(numCompareDelta));
-  }, [setSize, points, trial, barTotal, barCorrect, sacTotal, sacHits, numExposureMs, numMinSepPx, numSimilarity01, numAnchorSetSize, numCompareDelta]);
+    localStorage.setItem("enumerate_pool", JSON.stringify(enumeratePool));
+    localStorage.setItem("consecutive_correct_at_max", JSON.stringify(consecutiveCorrectAtMax));
+  }, [setSize, points, trial, barTotal, barCorrect, sacTotal, sacHits, numExposureMs, numMinSepPx, numSimilarity01, numAnchorSetSize, numCompareDelta, enumeratePool, consecutiveCorrectAtMax]);
 
   // Cleanup timers on unmount
   useEffect(() => {
