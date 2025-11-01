@@ -472,29 +472,10 @@ function highlightProbe(ctx: CanvasRenderingContext2D, x: number, y: number) {
 // -------------------- Main Component --------------------
 export default function Page() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  // Fullscreen canvas sizing
-  const [vp, setVp] = useState({ w: 0, h: 0, dpr: 1 });
-  useEffect(() => {
-    const resize = () => {
-      const dpr = Math.max(1, Math.min(2, (typeof window !== "undefined" && (window as any).devicePixelRatio) || 1));
-      const w = typeof window !== "undefined" ? window.innerWidth : 1024;
-      const h = typeof window !== "undefined" ? window.innerHeight : 700;
-      setVp({ w, h, dpr });
-      const c = canvasRef.current;
-      if (c) {
-        c.style.width = `${w}px`;
-        c.style.height = `${h}px`;
-        c.width = Math.floor(w * dpr);
-        c.height = Math.floor(h * dpr);
-      }
-    };
-    resize();
-    window.addEventListener("resize", resize);
-    return () => window.removeEventListener("resize", resize);
-  }, []);
-  const w = vp.w || 1024;
-  const h = vp.h || 700;
-  const dpr = vp.dpr || 1;
+  // Fixed canvas size (pre-fullscreen)
+  const w = 1024;
+  const h = 700;
+  const dpr = 1;
 
   // Session state
   const [setSize, setSetSize] = useState(1);
@@ -1356,11 +1337,13 @@ export default function Page() {
   }, []);
 
   return (
-    <div className="fixed inset-0 bg-neutral-100 text-neutral-900">
+    <div className="centered-app text-neutral-900">
       <canvas
         ref={canvasRef}
         onClick={handleCanvasClick}
-        className="block w-full h-full"
+        width={w}
+        height={h}
+        style={{ width: w, height: h, display: "block" }}
       />
       <div className="absolute top-3 left-3 right-3 flex items-center justify-between">
         <div className="font-mono text-sm tracking-tight px-3 py-1 rounded-md bg-white/80 border border-neutral-200 backdrop-blur">

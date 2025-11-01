@@ -28,6 +28,25 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
+        {/*
+        <nav style={{ 
+          padding: "16px", 
+          background: "#1a1a1a", 
+          borderBottom: "1px solid #333",
+          display: "flex",
+          gap: "16px"
+        }}>
+          <a href="/" style={{ color: "#ddd", textDecoration: "none", padding: "8px 16px", borderRadius: "4px", background: "#333" }}>
+            Visual Memory
+          </a>
+          <a href="/induction" style={{ color: "#ddd", textDecoration: "none", padding: "8px 16px", borderRadius: "4px", background: "#333" }}>
+            Pattern Induction
+          </a>
+          <a href="/numeracy" style={{ color: "#ddd", textDecoration: "none", padding: "8px 16px", borderRadius: "4px", background: "#333" }}>
+            Numeracy Trainer
+          </a>
+        </nav>
+        */}
         {children}
         <Analytics/>
       </body>
