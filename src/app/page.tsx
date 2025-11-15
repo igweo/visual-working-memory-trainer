@@ -685,17 +685,9 @@ export default function Page() {
       }
       correctStreakRef.current = 0;
     } else {
-      // 3-up/1-down adaptive rule for original modes
-      if (correct) {
-        correctStreakRef.current += 1;
-        if (correctStreakRef.current >= 3) {
-          setSetSize((s) => Math.min(SET_MAX, s + 1));
-          correctStreakRef.current = 0;
-        }
-      } else {
-        setSetSize((s) => Math.max(SET_MIN, s - 1));
-        correctStreakRef.current = 0;
-      }
+      // Block-based progression for visual tasks (orientation, color, saccade)
+      // Difficulty is adjusted at the end of each block below.
+      correctStreakRef.current = 0;
     }
 
     setBarTotal((t) => t + 1);
@@ -708,13 +700,17 @@ export default function Page() {
         setToast(`Block complete — accuracy ${(acc * 100).toFixed(1)}%`);
         setBarCorrect(0);
         setBarTotal(0);
-        if (mode === "spatial") {
-          // Block rule: if accuracy ≥ 90% → +2 (cap 7), else −1 (floor 1)
-          const SP_MIN = 1;
-          const SP_MAX = 7;
+        if (
+          mode === "spatial" ||
+          mode === "orientation" ||
+          mode === "color" ||
+          mode === "saccade"
+        ) {
+          // Unified block rule: ≥90% → up, 70–89% → stay, <70% → down
           setSetSize((s) => {
-            if (acc >= 0.9) return Math.min(SP_MAX, s + 2);
-            return Math.max(SP_MIN, s - 1);
+            if (acc >= 0.9) return Math.min(SET_MAX, s + 1);
+            if (acc >= 0.7) return s;
+            return Math.max(SET_MIN, s - 1);
           });
         }
         setTimeout(() => setToast(null), 1500);
